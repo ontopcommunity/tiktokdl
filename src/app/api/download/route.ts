@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
@@ -8,7 +8,7 @@ export const maxDuration = 60;
 const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
-function getAdmin() {
+function getAdmin(): SupabaseClient {
   if (!supabaseUrl || !serviceKey) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   }
@@ -17,13 +17,13 @@ function getAdmin() {
   });
 }
 
-async function ensureBucket(supabase: ReturnType<typeof createClient>) {
+async function ensureBucket(supabase: SupabaseClient) {
   const { data: buckets } = await supabase.storage.listBuckets();
-  const exists = buckets?.some((b) => b.name === "videos");
+  const exists = buckets?.some((b: { name: string }) => b.name === "videos");
   if (!exists) {
     const { error } = await supabase.storage.createBucket("videos", {
       public: true,
-      fileSizeLimit: 100 * 1024 * 1024, // 100MB
+      fileSizeLimit: 100 * 1024 * 1024,
       allowedMimeTypes: ["video/mp4", "video/webm", "video/quicktime", "video/*"],
     });
     if (error && !error.message.includes("already exists")) {
@@ -51,7 +51,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
     }
 
-    // 1. Fetch video (server-side → no CORS)
     const fetchRes = await fetch(url, {
       headers: {
         "User-Agent":
@@ -81,7 +80,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. Upload to Supabase Storage
     const supabase = getAdmin();
     await ensureBucket(supabase);
 
@@ -109,14 +107,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Public URL from Supabase (may still have CORS issues from browser)
     const { data: publicData } = supabase.storage.from("videos").getPublicUrl(path);
     const supabasePublicUrl = publicData.publicUrl;
 
-    // Our own CORS-friendly view URL on this domain
     const host = req.headers.get("host") || "tiktokdl-self.vercel.app";
     const protocol = host.includes("localhost") ? "http" : "https";
-    const viewUrl = `${protocol}://${host}/api/v/${id}.${ext}`;
+    const viewUrl = `${protocol}://${host}/api/v/${path}`;
 
     return NextResponse.json({
       success: true,
@@ -124,9 +120,7 @@ export async function POST(req: NextRequest) {
       filename: path,
       sizeMB,
       contentType,
-      // Link dùng domain đang deploy + đã gắn CORS
       viewUrl,
-      // Link gốc Supabase (backup)
       supabaseUrl: supabasePublicUrl,
       message: "Video đã lưu lên Supabase. Dùng viewUrl để xem (có CORS).",
     });
