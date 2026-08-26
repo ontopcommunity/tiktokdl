@@ -1,16 +1,38 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 export default function Home() {
-  const [url, setUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleDownload = async () => {
-    if (!url.trim()) {
-      setError("Vui lòng nhập link video");
+  const handleFile = (f: File | null) => {
+    setResult(null);
+    setError(null);
+    if (!f) {
+      setFile(null);
+      return;
+    }
+    if (!f.type.startsWith("video/") && !f.name.match(/\.(mp4|webm|mov|mkv|avi)$/i)) {
+      setError("Chỉ chấp nhận file video (mp4, webm, mov...)");
+      setFile(null);
+      return;
+    }
+    if (f.size > 95 * 1024 * 1024) {
+      setError("File quá lớn (tối đa ~95MB)");
+      setFile(null);
+      return;
+    }
+    setFile(f);
+  };
+
+  const handleUpload = async () => {
+    if (!file) {
+      setError("Vui lòng chọn file video");
       return;
     }
 
@@ -19,10 +41,12 @@ export default function Home() {
     setResult(null);
 
     try {
+      const formData = new FormData();
+      formData.append("file", file);
+
       const res = await fetch("/api/download", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim() }),
+        body: formData,
       });
 
       const data = await res.json();
@@ -53,7 +77,7 @@ export default function Home() {
           <div>
             <h1 className="text-xl font-bold">TikTokDL</h1>
             <p className="text-xs text-gray-400">
-              Bypass CORS • Lưu Supabase • Link xem có CORS
+              Upload file video • Lưu Supabase • Link xem có CORS
             </p>
           </div>
         </div>
@@ -61,25 +85,67 @@ export default function Home() {
 
       <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-12">
         <div className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-5">
-          <div>
-            <label className="block text-sm text-gray-400 mb-2">
-              Link video (TikTok CDN / direct MP4...)
-            </label>
+          {/* Drop zone */}
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              const f = e.dataTransfer.files?.[0];
+              if (f) handleFile(f);
+            }}
+            onClick={() => inputRef.current?.click()}
+            className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition ${
+              dragOver
+                ? "border-pink-500 bg-pink-500/10"
+                : "border-[#333] hover:border-[#555] bg-[#0a0a0a]"
+            }`}
+          >
             <input
-              type="url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://v16-notes.tiktokcdn-us.com/....mp4"
-              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3.5 text-sm focus:outline-none focus:border-pink-500 transition"
+              ref={inputRef}
+              type="file"
+              accept="video/*,.mp4,.webm,.mov,.mkv"
+              className="hidden"
+              onChange={(e) => handleFile(e.target.files?.[0] || null)}
             />
+            {file ? (
+              <div className="space-y-2">
+                <p className="text-green-400 font-medium">✓ Đã chọn file</p>
+                <p className="text-sm text-gray-300 break-all">{file.name}</p>
+                <p className="text-xs text-gray-500">
+                  {(file.size / (1024 * 1024)).toFixed(2)} MB • {file.type || "video"}
+                </p>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleFile(null);
+                    if (inputRef.current) inputRef.current.value = "";
+                  }}
+                  className="text-xs text-red-400 hover:underline mt-2"
+                >
+                  Xóa file
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-gray-300 font-medium">Kéo thả video vào đây</p>
+                <p className="text-sm text-gray-500">hoặc bấm để chọn file từ máy</p>
+                <p className="text-xs text-gray-600">mp4, webm, mov • tối đa ~95MB</p>
+              </div>
+            )}
           </div>
 
           <button
-            onClick={handleDownload}
-            disabled={loading}
+            onClick={handleUpload}
+            disabled={loading || !file}
             className="w-full py-3.5 rounded-xl font-semibold bg-gradient-to-r from-pink-500 to-cyan-400 hover:opacity-90 disabled:opacity-50 transition"
           >
-            {loading ? "Đang tải & lưu lên Supabase..." : "Tải & Lưu lên Supabase"}
+            {loading ? "Đang upload lên Supabase..." : "Upload video"}
           </button>
 
           {error && (
@@ -92,10 +158,10 @@ export default function Home() {
             <div className="bg-[#0a0a0a] border border-green-900/50 rounded-xl p-4 space-y-3 text-sm">
               <p className="text-green-400 font-medium">✅ {result.message}</p>
               <p>
-                <span className="text-gray-400">Size:</span> {result.sizeMB} MB
+                <span className="text-gray-400">File gốc:</span> {result.originalName}
               </p>
               <p>
-                <span className="text-gray-400">File:</span> {result.filename}
+                <span className="text-gray-400">Size:</span> {result.sizeMB} MB
               </p>
 
               <div className="space-y-1">
@@ -140,7 +206,7 @@ export default function Home() {
       </main>
 
       <footer className="border-t border-[#222] py-4 text-center text-xs text-gray-600">
-        TikTokDL • Supabase Storage • CORS-enabled viewer
+        TikTokDL • Upload file • Supabase • CORS viewer
       </footer>
     </div>
   );

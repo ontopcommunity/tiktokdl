@@ -34,67 +34,54 @@ async function ensureBucket(supabase: SupabaseClient) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { url } = body;
+    const formData = await req.formData();
+    const file = formData.get("file") as File | null;
 
-    if (!url || typeof url !== "string") {
-      return NextResponse.json({ error: "Missing url" }, { status: 400 });
+    if (!file) {
+      return NextResponse.json({ error: "Missing file. Gửi field 'file'." }, { status: 400 });
     }
 
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-      if (!["http:", "https:"].includes(parsed.protocol)) {
-        return NextResponse.json({ error: "Invalid protocol" }, { status: 400 });
-      }
-    } catch {
-      return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
-    }
-
-    const fetchRes = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "*/*",
-        Referer: "https://www.tiktok.com/",
-      },
-      cache: "no-store",
-    });
-
-    if (!fetchRes.ok) {
+    // Validate video
+    const contentType = file.type || "video/mp4";
+    if (!contentType.startsWith("video/") && !contentType.includes("octet-stream")) {
       return NextResponse.json(
-        { error: `Cannot fetch video: ${fetchRes.status}` },
-        { status: 502 }
+        { error: "Chỉ chấp nhận file video (mp4, webm, mov...)" },
+        { status: 400 }
       );
     }
 
-    const contentType = fetchRes.headers.get("content-type") || "video/mp4";
-    const arrayBuffer = await fetchRes.arrayBuffer();
+    const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const sizeMB = (buffer.length / (1024 * 1024)).toFixed(2);
 
     if (buffer.length > 95 * 1024 * 1024) {
       return NextResponse.json(
-        { error: `File too large (${sizeMB} MB). Max ~95MB.` },
+        { error: `File quá lớn (${sizeMB} MB). Tối đa ~95MB.` },
         { status: 413 }
       );
+    }
+
+    if (buffer.length < 1000) {
+      return NextResponse.json({ error: "File rỗng hoặc quá nhỏ" }, { status: 400 });
     }
 
     const supabase = getAdmin();
     await ensureBucket(supabase);
 
     const id = randomUUID();
-    const ext = contentType.includes("webm")
-      ? "webm"
-      : contentType.includes("quicktime")
-      ? "mov"
-      : "mp4";
+    let ext = "mp4";
+    if (contentType.includes("webm")) ext = "webm";
+    else if (contentType.includes("quicktime") || contentType.includes("mov")) ext = "mov";
+    else if (file.name) {
+      const parts = file.name.split(".");
+      if (parts.length > 1) ext = parts.pop()!.toLowerCase().replace(/[^a-z0-9]/g, "") || "mp4";
+    }
     const path = `${id}.${ext}`;
 
     const { error: uploadError } = await supabase.storage
       .from("videos")
       .upload(path, buffer, {
-        contentType,
+        contentType: contentType.startsWith("video/") ? contentType : "video/mp4",
         upsert: false,
         cacheControl: "public, max-age=31536000",
       });
@@ -102,7 +89,7 @@ export async function POST(req: NextRequest) {
     if (uploadError) {
       console.error("Upload error:", uploadError);
       return NextResponse.json(
-        { error: uploadError.message || "Upload to Supabase failed" },
+        { error: uploadError.message || "Upload lên Supabase thất bại" },
         { status: 500 }
       );
     }
@@ -118,11 +105,12 @@ export async function POST(req: NextRequest) {
       success: true,
       id,
       filename: path,
+      originalName: file.name,
       sizeMB,
       contentType,
       viewUrl,
       supabaseUrl: supabasePublicUrl,
-      message: "Video đã lưu lên Supabase. Dùng viewUrl để xem (có CORS).",
+      message: "Video đã upload lên Supabase. Dùng viewUrl để xem (có CORS).",
     });
   } catch (err: any) {
     console.error(err);
