@@ -2,9 +2,13 @@
 
 import { useState, useRef } from "react";
 
+const MAX_MB = 200;
+const MAX_BYTES = MAX_MB * 1024 * 1024;
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -13,6 +17,7 @@ export default function Home() {
   const handleFile = (f: File | null) => {
     setResult(null);
     setError(null);
+    setProgress(0);
     if (!f) {
       setFile(null);
       return;
@@ -22,8 +27,8 @@ export default function Home() {
       setFile(null);
       return;
     }
-    if (f.size > 95 * 1024 * 1024) {
-      setError("File quá lớn (tối đa ~95MB)");
+    if (f.size > MAX_BYTES) {
+      setError(`File quá lớn (tối đa ${MAX_MB}MB). File hiện tại: ${(f.size / 1024 / 1024).toFixed(1)}MB`);
       setFile(null);
       return;
     }
@@ -39,23 +44,81 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setProgress(0);
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const res = await fetch("/api/download", {
+      // 1) Lấy signed upload URL từ server
+      const metaRes = await fetch("/api/upload-url", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type || "video/mp4",
+          size: file.size,
+        }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || "Upload failed");
+      const text = await metaRes.text();
+      let meta: any;
+      try {
+        meta = JSON.parse(text);
+      } catch {
+        throw new Error(
+          metaRes.status === 413
+            ? "File quá lớn so với giới hạn server"
+            : `Lỗi server (${metaRes.status}): ${text.slice(0, 120)}`
+        );
       }
 
-      setResult(data);
+      if (!metaRes.ok) {
+        throw new Error(meta.error || "Không tạo được upload URL");
+      }
+
+      // 2) Upload thẳng lên Supabase bằng signed URL (không qua Vercel body)
+      setProgress(10);
+
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", meta.signedUrl);
+        xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
+        // Supabase signed upload often expects this header with the token
+        if (meta.token) {
+          xhr.setRequestHeader("x-upsert", "false");
+        }
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round(10 + (e.loaded / e.total) * 85);
+            setProgress(pct);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            reject(
+              new Error(
+                `Upload Supabase thất bại (${xhr.status}): ${xhr.responseText?.slice(0, 150) || "unknown"}`
+              )
+            );
+          }
+        };
+        xhr.onerror = () => reject(new Error("Lỗi mạng khi upload lên Supabase"));
+        xhr.send(file);
+      });
+
+      setProgress(100);
+
+      setResult({
+        success: true,
+        filename: meta.path,
+        originalName: file.name,
+        sizeMB: (file.size / 1024 / 1024).toFixed(2),
+        viewUrl: meta.viewUrl,
+        supabaseUrl: meta.supabaseUrl,
+        message: "Video đã upload lên Supabase. Dùng viewUrl để xem (có CORS).",
+      });
     } catch (err: any) {
       setError(err.message || "Có lỗi xảy ra");
     } finally {
@@ -77,7 +140,7 @@ export default function Home() {
           <div>
             <h1 className="text-xl font-bold">TikTokDL</h1>
             <p className="text-xs text-gray-400">
-              Upload file video • Lưu Supabase • Link xem có CORS
+              Upload file (tối đa {MAX_MB}MB) • Supabase • Link CORS
             </p>
           </div>
         </div>
@@ -85,7 +148,6 @@ export default function Home() {
 
       <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-12">
         <div className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-5">
-          {/* Drop zone */}
           <div
             onDragOver={(e) => {
               e.preventDefault();
@@ -135,7 +197,7 @@ export default function Home() {
               <div className="space-y-2">
                 <p className="text-gray-300 font-medium">Kéo thả video vào đây</p>
                 <p className="text-sm text-gray-500">hoặc bấm để chọn file từ máy</p>
-                <p className="text-xs text-gray-600">mp4, webm, mov • tối đa ~95MB</p>
+                <p className="text-xs text-gray-600">mp4, webm, mov • tối đa {MAX_MB}MB</p>
               </div>
             )}
           </div>
@@ -145,8 +207,17 @@ export default function Home() {
             disabled={loading || !file}
             className="w-full py-3.5 rounded-xl font-semibold bg-gradient-to-r from-pink-500 to-cyan-400 hover:opacity-90 disabled:opacity-50 transition"
           >
-            {loading ? "Đang upload lên Supabase..." : "Upload video"}
+            {loading ? `Đang upload... ${progress}%` : "Upload video"}
           </button>
+
+          {loading && (
+            <div className="w-full h-2 bg-[#222] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-pink-500 to-cyan-400 transition-all duration-300"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          )}
 
           {error && (
             <div className="text-sm text-red-400 bg-red-950/40 border border-red-900 rounded-xl px-4 py-3">
@@ -165,7 +236,7 @@ export default function Home() {
               </p>
 
               <div className="space-y-1">
-                <p className="text-gray-400">Link xem (có CORS – dùng domain này):</p>
+                <p className="text-gray-400">Link xem (có CORS):</p>
                 <div className="flex gap-2 items-start">
                   <a
                     href={result.viewUrl}
@@ -196,17 +267,16 @@ export default function Home() {
         </div>
 
         <div className="mt-8 text-center text-xs text-gray-500 space-y-1">
-          <p>Video lưu trên Supabase Storage (bucket: videos)</p>
+          <p>Upload thẳng lên Supabase (không qua Vercel body) → hỗ trợ tới {MAX_MB}MB</p>
           <p>
-            Link <code className="text-gray-400">/api/v/...</code> đã gắn{" "}
+            Link <code className="text-gray-400">/api/v/...</code> gắn{" "}
             <code className="text-gray-400">Access-Control-Allow-Origin: *</code>
           </p>
-          <p>Website khác có thể fetch / embed link này mà không bị CORS</p>
         </div>
       </main>
 
       <footer className="border-t border-[#222] py-4 text-center text-xs text-gray-600">
-        TikTokDL • Upload file • Supabase • CORS viewer
+        TikTokDL • Direct Supabase upload • Max {MAX_MB}MB • CORS viewer
       </footer>
     </div>
   );
