@@ -1,11 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
-const REPO_OWNER = "ontopcommunity";
-const REPO_NAME = "tiktokdl";
+const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
+function getAdmin() {
+  if (!supabaseUrl || !serviceKey) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  }
+  return createClient(supabaseUrl, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+async function ensureBucket(supabase: ReturnType<typeof createClient>) {
+  const { data: buckets } = await supabase.storage.listBuckets();
+  const exists = buckets?.some((b) => b.name === "videos");
+  if (!exists) {
+    const { error } = await supabase.storage.createBucket("videos", {
+      public: true,
+      fileSizeLimit: 100 * 1024 * 1024, // 100MB
+      allowedMimeTypes: ["video/mp4", "video/webm", "video/quicktime", "video/*"],
+    });
+    if (error && !error.message.includes("already exists")) {
+      console.error("createBucket error:", error);
+    }
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,7 +41,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing url" }, { status: 400 });
     }
 
-    // Validate URL
     let parsed: URL;
     try {
       parsed = new URL(url);
@@ -27,7 +51,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
     }
 
-    // 1. Fetch the video (server-side = no CORS)
+    // 1. Fetch video (server-side → no CORS)
     const fetchRes = await fetch(url, {
       headers: {
         "User-Agent":
@@ -40,7 +64,7 @@ export async function POST(req: NextRequest) {
 
     if (!fetchRes.ok) {
       return NextResponse.json(
-        { error: `Cannot fetch video: ${fetchRes.status} ${fetchRes.statusText}` },
+        { error: `Cannot fetch video: ${fetchRes.status}` },
         { status: 502 }
       );
     }
@@ -50,74 +74,61 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(arrayBuffer);
     const sizeMB = (buffer.length / (1024 * 1024)).toFixed(2);
 
-    if (buffer.length > 45 * 1024 * 1024) {
+    if (buffer.length > 95 * 1024 * 1024) {
       return NextResponse.json(
-        { error: `File too large (${sizeMB} MB). Max ~45MB for GitHub Contents API.` },
+        { error: `File too large (${sizeMB} MB). Max ~95MB.` },
         { status: 413 }
       );
     }
 
-    // 2. Upload to GitHub repo
-    if (!GITHUB_TOKEN) {
-      return NextResponse.json(
-        { error: "GITHUB_TOKEN not configured on server" },
-        { status: 500 }
-      );
-    }
+    // 2. Upload to Supabase Storage
+    const supabase = getAdmin();
+    await ensureBucket(supabase);
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const id = randomUUID();
     const ext = contentType.includes("webm")
       ? "webm"
       : contentType.includes("quicktime")
       ? "mov"
       : "mp4";
-    const filename = `video_${timestamp}.${ext}`;
-    const path = `downloads/${filename}`;
+    const path = `${id}.${ext}`;
 
-    const base64Content = buffer.toString("base64");
+    const { error: uploadError } = await supabase.storage
+      .from("videos")
+      .upload(path, buffer, {
+        contentType,
+        upsert: false,
+        cacheControl: "public, max-age=31536000",
+      });
 
-    const uploadRes = await fetch(
-      `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${path}`,
-      {
-        method: "PUT",
-        headers: {
-          Authorization: `token ${GITHUB_TOKEN}`,
-          Accept: "application/vnd.github.v3+json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: `Download video: ${filename} (${sizeMB} MB)`,
-          content: base64Content,
-          branch: "main",
-        }),
-      }
-    );
-
-    const uploadData = await uploadRes.json();
-
-    if (!uploadRes.ok) {
-      console.error("GitHub upload error:", uploadData);
+    if (uploadError) {
+      console.error("Upload error:", uploadError);
       return NextResponse.json(
-        {
-          error: uploadData.message || "Failed to upload to GitHub",
-          details: uploadData,
-        },
+        { error: uploadError.message || "Upload to Supabase failed" },
         { status: 500 }
       );
     }
 
-    const downloadUrl =
-      uploadData.content?.download_url ||
-      `https://github.com/${REPO_OWNER}/${REPO_NAME}/blob/main/${path}`;
+    // Public URL from Supabase (may still have CORS issues from browser)
+    const { data: publicData } = supabase.storage.from("videos").getPublicUrl(path);
+    const supabasePublicUrl = publicData.publicUrl;
+
+    // Our own CORS-friendly view URL on this domain
+    const host = req.headers.get("host") || "tiktokdl-self.vercel.app";
+    const protocol = host.includes("localhost") ? "http" : "https";
+    const viewUrl = `${protocol}://${host}/api/v/${id}.${ext}`;
 
     return NextResponse.json({
       success: true,
-      filename,
-      path,
+      id,
+      filename: path,
       sizeMB,
-      githubUrl: downloadUrl,
-      htmlUrl: uploadData.content?.html_url,
-      message: "Video đã được tải và lưu vào GitHub repo",
+      contentType,
+      // Link dùng domain đang deploy + đã gắn CORS
+      viewUrl,
+      // Link gốc Supabase (backup)
+      supabaseUrl: supabasePublicUrl,
+      message: "Video đã lưu lên Supabase. Dùng viewUrl để xem (có CORS).",
     });
   } catch (err: any) {
     console.error(err);

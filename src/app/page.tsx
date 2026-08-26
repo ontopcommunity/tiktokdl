@@ -28,7 +28,7 @@ export default function Home() {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || "Download failed");
+        throw new Error(data.error || "Upload failed");
       }
 
       setResult(data);
@@ -37,6 +37,10 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text);
   };
 
   return (
@@ -48,7 +52,9 @@ export default function Home() {
           </div>
           <div>
             <h1 className="text-xl font-bold">TikTokDL</h1>
-            <p className="text-xs text-gray-400">Bypass CORS • Download • Save to GitHub</p>
+            <p className="text-xs text-gray-400">
+              Bypass CORS • Lưu Supabase • Link xem có CORS
+            </p>
           </div>
         </div>
       </header>
@@ -57,7 +63,7 @@ export default function Home() {
         <div className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-5">
           <div>
             <label className="block text-sm text-gray-400 mb-2">
-              Link video (TikTok CDN, direct MP4, hoặc bất kỳ URL video nào)
+              Link video (TikTok CDN / direct MP4...)
             </label>
             <input
               type="url"
@@ -73,7 +79,7 @@ export default function Home() {
             disabled={loading}
             className="w-full py-3.5 rounded-xl font-semibold bg-gradient-to-r from-pink-500 to-cyan-400 hover:opacity-90 disabled:opacity-50 transition"
           >
-            {loading ? "Đang tải & lưu vào GitHub..." : "Tải video về GitHub"}
+            {loading ? "Đang tải & lưu lên Supabase..." : "Tải & Lưu lên Supabase"}
           </button>
 
           {error && (
@@ -83,50 +89,58 @@ export default function Home() {
           )}
 
           {result && (
-            <div className="bg-[#0a0a0a] border border-green-900/50 rounded-xl p-4 space-y-2 text-sm">
+            <div className="bg-[#0a0a0a] border border-green-900/50 rounded-xl p-4 space-y-3 text-sm">
               <p className="text-green-400 font-medium">✅ {result.message}</p>
-              <p>
-                <span className="text-gray-400">File:</span> {result.filename}
-              </p>
               <p>
                 <span className="text-gray-400">Size:</span> {result.sizeMB} MB
               </p>
               <p>
-                <span className="text-gray-400">Path:</span> {result.path}
+                <span className="text-gray-400">File:</span> {result.filename}
               </p>
-              {result.githubUrl && (
-                <a
-                  href={result.githubUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-block mt-2 text-cyan-400 hover:underline break-all"
-                >
-                  → Xem / Tải trên GitHub
-                </a>
-              )}
-              {result.htmlUrl && (
-                <a
-                  href={result.htmlUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block text-gray-400 hover:underline text-xs break-all"
-                >
-                  {result.htmlUrl}
-                </a>
+
+              <div className="space-y-1">
+                <p className="text-gray-400">Link xem (có CORS – dùng domain này):</p>
+                <div className="flex gap-2 items-start">
+                  <a
+                    href={result.viewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-cyan-400 hover:underline break-all flex-1"
+                  >
+                    {result.viewUrl}
+                  </a>
+                  <button
+                    onClick={() => copy(result.viewUrl)}
+                    className="shrink-0 px-3 py-1 rounded-lg bg-[#262626] hover:bg-[#333] text-xs"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+
+              {result.viewUrl && (
+                <video
+                  src={result.viewUrl}
+                  controls
+                  className="w-full rounded-xl mt-2 max-h-64 bg-black"
+                />
               )}
             </div>
           )}
         </div>
 
         <div className="mt-8 text-center text-xs text-gray-500 space-y-1">
-          <p>Video sẽ được lưu vào thư mục <code className="text-gray-400">downloads/</code> của repo</p>
-          <p>Repo: <a href="https://github.com/ontopcommunity/tiktokdl" className="text-pink-400 hover:underline" target="_blank">ontopcommunity/tiktokdl</a></p>
-          <p className="pt-2">Giới hạn ~45MB / file (GitHub Contents API)</p>
+          <p>Video lưu trên Supabase Storage (bucket: videos)</p>
+          <p>
+            Link <code className="text-gray-400">/api/v/...</code> đã gắn{" "}
+            <code className="text-gray-400">Access-Control-Allow-Origin: *</code>
+          </p>
+          <p>Website khác có thể fetch / embed link này mà không bị CORS</p>
         </div>
       </main>
 
       <footer className="border-t border-[#222] py-4 text-center text-xs text-gray-600">
-        TikTokDL • CORS Bypass • GitHub Storage
+        TikTokDL • Supabase Storage • CORS-enabled viewer
       </footer>
     </div>
   );
